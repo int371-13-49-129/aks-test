@@ -1,0 +1,205 @@
+public cloud เมื่อสร้าง service loadbalancer ตัว cloud จะสร้าง loadbalancer ขว้างหน้าเอาไว้ด้วย
+Standard B2s
+2 vcpus, 4 GiB memory
+
+---Create k8s cluster and preparing for deploy---
+1.สร้าง k8s cluster
+2.เข้าไปที่ bash
+3.get credentials เพื่อ authen เข้า API โดยใช้ .kube/config หรือเรียกว่า kube config ใช้อันไหนก็ได้มี 2 อัน อันที่ 2 ใช้เมื่อมี aks ซ้ำ ป้องกันการเกิด error ได้
+  az aks get-credentials --resource-group admin --name admin
+  az aks get-credentials --resource-group smb-resource --name smb-cluster --overwrite-existing
+4.cat /home/punthanat/.kube/config  //เข้าไปใส่ใน lens
+5.ทำ ssh-keygen และ login git registry ด้วย
+ssh-keygen
+กดenter3ครั้ง
+cat ~/.ssh/id_rsa.pub
+ก็อปแล้วไปวางในgit hub
+
+
+-Login to GitHub registry-
+6.export TOKEN= เอาค่าจากการ generated token ใน git ตัวเองมาใส่ ติ๊กที่  write:packages อย่างเดียวพอ    //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
+7.export GITHUB_USER= ชื่อ username ใน git เรา  //punthanat
+8.echo $TOKEN | docker login ghcr.io --password-stdin --username $GITHUB_USER  //ใส่ไปเลยตรงๆ ไม่ต้องแก้
+
+-Create Secret to pull Docker Image from GitHub Docker Private Registry- 07-k8s 3.22.00
+9.kubectl create namespace jd-workload   //สร้าง namespace สำหรับ project เราก่อน
+kubectl get secret เพื่อดูแต่ไม่ต้องทำไร เราจะสร้าง secret ขึ้นมาใหม่
+cat ~/.docker/config.json เราต้องเอาข้อมูลมาใส่ใน k8s cluster แบบ secret โดยใช้คำสั่ง
+10.kubectl create secret generic registry-github \
+  --from-file=.dockerconfigjson=$HOME/.docker/config.json \
+  --type=kubernetes.io/dockerconfigjson \
+  --namespace=jd-workload
+
+kubectl get secret --namespace=smb-workload เพื่อดูว่ามี secret ขึ้นมาจริงไหม
+kubectl describe secret registry-github --namespace=smb-workload ดูแบบละเอียด
+11.Clone your project and cd in your folder
+----------------------------------------------------------------------------
+
+
+---Using Nginx ingress controller for publish public IP and making ingress---
+1.kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.2.0/deploy/static/provider/cloud/deploy.yaml
+ // ทำ hosting โดยเอา ip จาก service loadbalancer ที่มันทำให้ เอาไปใส่ที่ no-ip.com
+
+//kubectl delete -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.2.0/deploy/static/provider/cloud/deploy.yaml
+Source1: https://kubernetes.github.io/ingress-nginx/deploy/#azure
+Source2: https://docs.microsoft.com/en-us/azure/aks/ingress-internal-ip?tabs=azure-cli#create-an-ingress-controller
+----------------------------------------------------------------------------
+
+
+
+
+
+---Install cert-manager---
+1.kubectl create namespace cert-manager
+2.helm repo add jetstack https://charts.jetstack.io
+3.helm repo update
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.0/cert-manager.crds.yaml
+4.helm install \
+  cert-manager jetstack/cert-manager \
+  --namespace=cert-manager \
+  --version v1.8.0 \
+  --set installCRDs=true
+
+
+### If you don't make firewall, you should skip this step. ###
+### Becareful!!!, if you wrong something, you have to delete your AKS cluster ###
+### I don't have a solution to fix it, don't blame me. -_- ###
+
+---Make firewall--- ดูเอกสาร azure firewall ประกอบ เพราะใช้ terraform ทำ
+1.ลบ service loadbalancer ของ nginx ingress controller ออก
+2.เอา public ip ของ firewall มาใส่ใน noip.com 
+3.แก้ firewall nat ตัว Translated address ใน terraform ซึ่งมันจะเป็น dummy อยู่ เอา ip pod ของ nginx-ingress มาใส่
+4.route table ใส่ subnet ของ subnet workload ลงไป
+//ถ้าไม่ลบมันจะเกิด error ที่ยังหาวิธีแก้ไม่ได้  ติด Webhook ingress-nginx-admission
+5.kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission
+//ถ้าไม่ลบมันจะเกิด error ที่ยังหาวิธีแก้ไม่ได้ของ cert-manager
+6.kubectl delete mutatingwebhookconfiguration.admissionregistration.k8s.io cert-manager-webhook
+7.kubectl delete validatingwebhookconfigurations.admissionregistration.k8s.io cert-manager-webhook
+-------------------------------------------------------------------
+
+
+5.Configure a Let's Encrypt Issuer แบบ prod ถ้า staging จะได้ fake cert มา and Apply cluster-issuer.yaml โดยใช้คำสั่ง
+  kubectl apply -f k8s-helm-ssl/cluster-issuer.yaml
+
+6.Deploy a TLS Ingress Resource or using helm to deploy all service โดยใช้คำสั่ง
+  helm install -f k8s-helm-ssl/helm-values/values-smb-dev.yaml sharemybook k8s-helm-ssl/helm --namespace=smb-workload
+
+-Get a new certificate for updating certifiacate-
+kubectl describe certificate tls-secret --namespace=smb-workload
+kubectl delete secret tls-secret --namespace=smb-workload
+
+
+
+--How to uninstall, don't do it naja--
+1.helm --namespace=cert-manager delete cert-manager
+2.kubectl delete namespace cert-manager
+3.kubectl delete -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.0/cert-manager.crds.yaml 
+
+Source1: https://docs.microsoft.com/en-us/azure/aks/ingress-static-ip?tabs=azure-cli#install-cert-manager
+Source2: https://cert-manager.io/docs/tutorials/acme/nginx-ingress/#step-5---deploy-cert-manager
+Source3: https://cert-manager.io/docs/installation/helm/#installing-with-helm
+----------------------------------------------------------------------------
+
+
+
+---Finally---
+1.Test your app
+2.Thank you naja for your patient to do this.
+----------------------------------------------------------------------------
+
+
+
+---Command to deploy k8s and helm---
+
+kubectl apply -f k8s-basic/
+kubectl apply -f frontend.yaml
+kubectl delete -f k8s-basic/
+
+helm list
+helm install -f pathValue ชื่อrelease pathHelmChart   //ใช้ครั้งแรก
+helm upgrade -f pathValue ชื่อrelease pathHelmChart   //ใช้ครั้งที่สองเป็นต้นไป
+helm uninstall ชื่อrelease   //ลบออก
+helm downgrade -f pathValue ชื่อrelease pathHelmChart
+
+helm install -f k8s-helm/helm-values/values-smb-dev.yaml sharemybook k8s-helm/helm --namespace=smb-workload
+helm install -f k8s-helm-ssl/helm-values/values-smb-dev.yaml sharemybook k8s-helm-ssl/helm --namespace=smb-workload
+helm upgrade -f k8s-helm-ssl/helm-values/values-smb-dev.yaml sharemybook k8s-helm-ssl/helm --namespace=smb-workload 
+helm upgrade -f k8s-helm-ssl/helm-values/values-smb-dev.yaml --set extraEnv.COMMIT_ID=bb  sharemybook k8s-helm-ssl/helm --namespace=smb-workload 
+helm uninstall sharemybook --namespace=smb-workload 
+----------------------------------------------------------------------------
+
+
+---cicd---
+ดูดีๆ ต้องเอา folder helm ไปใส่ใน repo front และ back ด้วยนะ
+
+cicd commit id เปลี่ยนเสมอ -k8s11-2.15.00
+
+---------------------------------------
+
+
+
+░░▄▀░░░░░░░░░░░░░░░▀▀▄▄░░░░░ 
+░░▄▀░░░░░░░░░░░░░░░░░░░░▀▄░░░ 
+░▄▀░░░░░░░░░░░░░░░░░░░░░░░█░░ 
+░█░░░░░░░░░░░░░░░░░░░░░░░░░█░ 
+▐░░░░░░░░░░░░░░░░░░░░░░░░░░░█ 
+█░░░░▀▀▄▄▄▄░░░▄▌░░░░░░░░░░░░▐ 
+▌░░░░░▌░░▀▀█▀▀░░░▄▄░░░░░░░▌░▐ 
+▌░░░░░░▀▀▀▀░░░░░░▌░▀██▄▄▄▀░░▐ 
+▌░░░░░░░░░░░░░░░░░▀▄▄▄▄▀░░░▄▌ 
+▐░░░░▐░░░░░░░░░░░░░░░░░░░░▄▀░ 
+░█░░░▌░░▌▀▀▀▄▄▄▄░░░░░░░░░▄▀░░ 
+░░█░░▀░░░░░░░░░░▀▌░░▌░░░█░░░░ 
+░░░▀▄░░░░░░░░░░░░░▄▀░░▄▀░░░░░ 
+░░░░░▀▄▄▄░░░░░░░░░▄▄▀▀░░░░░░░ 
+░░░░░░░░▐▌▀▀▀▀▀▀▀▀░░░░░░░░░░░ 
+░░░░░░░░█░░░░░░░░░░░░░░░░░░░░ 
+░░╔═╗╔═╗╔═╗░░░░░║░║╔═╗║░║░░░░ 
+░░╠═╣╠╦╝╠╣░░░░░░╚╦╝║░║║░║░░░░ 
+░░║░║║╚═╚═╝░░░░░░║░╚═╝╚═╝░░░░ 
+║╔═░╦░╦═╗╦═╗╦╔╗║╔═╗░░╔╦╗╔═╗╔╗ 
+╠╩╗░║░║░║║░║║║║║║═╗░░║║║╠╣░╔╝ 
+║░╚░╩░╩═╝╩═╝╩║╚╝╚═╝░░║║║╚═╝▄░ 
+
+
+. . . . .. . . . . . . . . . . ,.-‘”. . . . . . . . . .``~.,
+. . . . . . . .. . . . . .,.-”. . . . . . . . . . . . . . . . . .“-.,
+. . . . .. . . . . . ..,/. . . . . . . . . . . . . . . . . . . . . . . ”:,
+. . . . . . . .. .,?. . . . . . . . . . . . . . . . . . . . . . . . . . .\,
+. . . . . . . . . /. . . . . . . . . . . . . . . . . . . . . . . . . . . . ,}
+. . . . . . . . ./. . . . . . . . . . . . . . . . . . . . . . . . . . ,:`^`.}
+. . . . . . . ./. . . . . . . . . . . . . . . . . . . . . . . . . ,:”. . . ./
+. . . . . . .?. . . __. . . . . . . . . . . . . . . . . . . . :`. . . ./
+. . . . . . . /__.(. . .“~-,_. . . . . . . . . . . . . . ,:`. . . .. ./
+. . . . . . /(_. . ”~,_. . . ..“~,_. . . . . . . . . .,:`. . . . _/
+. . . .. .{.._$;_. . .”=,_. . . .“-,_. . . ,.-~-,}, .~”; /. .. .}
+. . .. . .((. . .*~_. . . .”=-._. . .“;,,./`. . /” . . . ./. .. ../
+. . . .. . .\`~,. . ..“~.,. . . . . . . . . ..`. . .}. . . . . . ../
+. . . . . .(. ..`=-,,. . . .`. . . . . . . . . . . ..(. . . ;_,,-”
+. . . . . ../.`~,. . ..`-.. . . . . . . . . . . . . . ..\. . /\
+. . . . . . \`~.*-,. . . . . . . . . . . . . . . . . ..|,./.....\,__
+,,_. . . . . }.>-._\. . . . . . . . . . . . . . . . . .|. . . . . . ..`=~-,
+. .. `=~-,_\_. . . `\,. . . . . . . . . . . . . . . . .\
+. . . . . . . . . .`=~-,,.\,. . . . . . . . . . . . . . . .\
+. . . . . . . . . . . . . . . . `:,, . . . . . . . . . . . . . `\. . . . . . ..__
+. . . . . . . . . . . . . . . . . . .`=-,. . . . . . . . . .,%`>--==``
+. . . . . . . . . . . . . . . . . . . . _\. . . . . ._,-%. . . ..`
+
+
+
+
+░░░░░░░░░░░░░░░░░░░░░▄▀░░▌
+░░░░░░░░░░░░░░░░░░░▄▀▐░░░▌
+░░░░░░░░░░░░░░░░▄▀▀▒▐▒░░░▌
+░░░░░▄▀▀▄░░░▄▄▀▀▒▒▒▒▌▒▒░░▌
+░░░░▐▒░░░▀▄▀▒▒▒▒▒▒▒▒▒▒▒▒▒█
+░░░░▌▒░░░░▒▀▄▒▒▒▒▒▒▒▒▒▒▒▒▒▀▄
+░░░░▐▒░░░░░▒▒▒▒▒▒▒▒▒▌▒▐▒▒▒▒▒▀▄
+░░░░▌▀▄░░▒▒▒▒▒▒▒▒▐▒▒▒▌▒▌▒▄▄▒▒▐
+░░░▌▌▒▒▀▒▒▒▒▒▒▒▒▒▒▐▒▒▒▒▒█▄█▌▒▒▌
+░▄▀▒▐▒▒▒▒▒▒▒▒▒▒▒▄▀█▌▒▒▒▒▒▀▀▒▒▐░░░▄
+▀▒▒▒▒▌▒▒▒▒▒▒▒▄▒▐███▌▄▒▒▒▒▒▒▒▄▀▀▀▀
+▒▒▒▒▒▐▒▒▒▒▒▄▀▒▒▒▀▀▀▒▒▒▒▄█▀░░▒▌▀▀▄▄
+▒▒▒▒▒▒█▒▄▄▀▒▒▒▒▒▒▒▒▒▒▒░░▐▒▀▄▀▄░░░░▀
+▒▒▒▒▒▒▒█▒▒▒▒▒▒▒▒▒▄▒▒▒▒▄▀▒▒▒▌░░▀▄
+▒▒▒▒▒▒▒▒▀▄▒▒▒▒▒▒▒▒▀▀▀▀▒▒▒▄▀

@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: jd-workload
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/int371-13-49-129/int371front:dev
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+      imagePullSecrets:
+        - name: registry-github
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: jd-workload
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+  selector:
+    app: frontend

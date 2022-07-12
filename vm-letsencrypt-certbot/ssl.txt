@@ -1,0 +1,43 @@
+1.clone project and cd เข้าไปใน project
+
+2.download setting file สำหรับ SSL setting โหลด certbot
+  mkdir -p "certbot/conf"
+  curl -s https://raw.githubusercontent.com/certbot/certbot/master/certbot-nginx/certbot_nginx/_internal/tls_configs/options-ssl-nginx.conf > "certbot/conf/options-ssl-nginx.conf"
+  curl -s https://raw.githubusercontent.com/certbot/certbot/master/certbot/certbot/ssl-dhparams.pem > "certbot/conf/ssl-dhparams.pem"
+
+
+3.Test http flow using nginx
+  docker-compose up -d
+
+
+4. ทำการขอ cert ในครั้งแรก
+//docker exec -it {certbot_container_name} certbot certonly --webroot -w /var/www/certbot -d {domain}
+  docker exec -it certbot certbot certonly --webroot -w /var/www/certbot -d sharemybook.ddns.net
+  
+   ตรวจสอบก่อนว่า cert เราเก็บไว้ที่ไหน
+//docker exec -it {certbot_container_name} certbot certificates
+  docker exec -it certbot certbot certificates
+
+
+5.copy data in defaultSSL.conf เอาไปใส่ใน default.conf
+
+6.reload config file อีกรอบ
+//docker exec -it {revere_proxy_container_name} nginx -t
+  docker exec -it sslReverseProxy nginx -t
+
+//docker exec -it {revere_proxy_container_name} nginx -s reload
+  docker exec -it sslReverseProxy nginx -s reload
+
+
+Source: https://prudchayapalee.medium.com/%E0%B8%97%E0%B8%B3-ssl-https-%E0%B9%82%E0%B8%94%E0%B8%A2%E0%B9%83%E0%B8%8A%E0%B9%89-lets-encrypt-cert-bot-%E0%B8%9A%E0%B8%99-nginx-%E0%B9%83%E0%B8%99%E0%B9%81%E0%B8%9A%E0%B8%9A%E0%B8%89%E0%B8%9A%E0%B8%B1%E0%B8%9A-docker-auto-renew-certificate-bc573e127f28
+
+
+
+
+
+
+
+
+
+
+
